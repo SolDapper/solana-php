@@ -341,12 +341,40 @@ Framework-specific integrations (OpenCart, Magento, WooCommerce, Laravel, etc.) 
 
 ## Testing
 
+### Unit tests
+
 ```bash
 composer install
 composer test-unit
 ```
 
-Current test suite: 307 tests, 1029 assertions.
+Current suite: 307 tests, 1029 assertions. Every wire format is validated byte-for-byte against `@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, and `borsh-rs`.
+
+### Live smoke test
+
+`tests/Live/devnet_smoke.php` is a standalone script that exercises the library end-to-end against a real RPC endpoint. It builds real transactions, submits them, and waits for chain confirmation. Use this before shipping any integration to production.
+
+```bash
+# 1. Get a funded devnet keypair:
+solana-keygen new --outfile ~/.config/solana/devnet-test.json
+solana airdrop 2 --keypair ~/.config/solana/devnet-test.json \
+    --url https://api.devnet.solana.com
+
+# 2. (Optional) Grab some devnet USDC from https://faucet.circle.com
+#    to exercise the SPL token path. Skipping this only skips two sub-tests.
+
+# 3. Run the smoke test:
+SOLANA_PHP_KEYPAIR_FILE=~/.config/solana/devnet-test.json \
+  php tests/Live/devnet_smoke.php
+```
+
+The script covers: RPC connectivity, SOL transfer with confirmation, priority-fee estimation against the live chain, Solana Pay URL encoding with round-trip parsing, USDC ATA existence check, and USDC `transferChecked` with confirmation. Each step prints PASS/FAIL/SKIP with a clear reason, and the overall script exits non-zero if anything fails.
+
+Environment variables:
+- `SOLANA_PHP_KEYPAIR_FILE` - path to a `solana-keygen` JSON keypair (required)
+- `SOLANA_PHP_KEYPAIR_JSON` - alternative: the JSON array as a string (useful in CI)
+- `SOLANA_PHP_RPC_URL` - default: `https://api.devnet.solana.com`
+- `SOLANA_PHP_MERCHANT` - default: ephemeral generated pubkey
 
 ## Roadmap
 
