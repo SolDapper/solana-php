@@ -1,0 +1,45 @@
+{
+    "name": "solana-php/solana-sdk",
+    "description": "PHP SDK for building Solana transactions, instructions, and integrating Solana payments into PHP applications.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["solana", "blockchain", "crypto", "payments", "web3", "borsh", "solana-pay"],
+    "require": {
+        "php": "^8.0",
+        "ext-sodium": "*",
+        "ext-mbstring": "*",
+        "ext-gmp": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.6 || ^10.0",
+        "guzzlehttp/guzzle": "^7.0",
+        "guzzlehttp/psr7": "^2.0",
+        "psr/http-client": "^1.0",
+        "psr/http-factory": "^1.0"
+    },
+    "suggest": {
+        "ext-bcmath": "Fallback for Base58 when GMP is unavailable (GMP is strongly preferred)",
+        "psr/http-client": "Plug any PSR-18 HTTP client into RpcClient via Psr18HttpClient",
+        "psr/http-factory": "PSR-17 request/stream factories, needed alongside psr/http-client",
+        "guzzlehttp/guzzle": "A solid PSR-18 implementation that works out of the box"
+    },
+    "autoload": {
+        "psr-4": {
+            "SolanaPhpSdk\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "SolanaPhpSdk\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test-unit": "phpunit --testsuite=Unit",
+        "test-integration": "phpunit --testsuite=Integration"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}
