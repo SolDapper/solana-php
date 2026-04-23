@@ -1,6 +1,6 @@
 {
     "name": "solana-php/solana-sdk",
-    "description": "PHP SDK for building Solana transactions, instructions, and integrating Solana payments into PHP applications.",
+    "description": "A framework-agnostic PHP library for building Solana transactions, instructions, and integrating Solana payments into PHP applications.",
     "type": "library",
     "license": "MIT",
     "keywords": ["solana", "blockchain", "crypto", "payments", "web3", "borsh", "solana-pay"],

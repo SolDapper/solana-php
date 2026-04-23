@@ -1,6 +1,6 @@
 # Solana PHP
 
-A PHP library for building Solana transactions, instructions, and integrating Solana payments into PHP applications.
+A framework-agnostic PHP library for building Solana transactions, instructions, and integrating Solana payments into PHP applications.
 
 **Status:** Feature-complete. Every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`). 288 tests, 995 assertions.
 
