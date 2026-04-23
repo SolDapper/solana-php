@@ -143,6 +143,99 @@ Construct and parse Solana Pay URLs — the standard URL format wallets use to c
 - **RPC client:** tests use an in-memory `MockHttpClient` to exercise every method's request shape, response parsing, and error handling without a network.
 - **End-to-end:** a full realistic payment transaction (ComputeBudget + createIdempotent + transferChecked + Memo) compiles, signs, serializes, round-trips, and verifies. A separate test demonstrates v0+ALT producing ~70% smaller transactions than the equivalent legacy form when touching 20 readonly accounts.
 
+## Choosing an RPC provider and fee estimator
+
+Solana PHP works with any Solana RPC provider — you only need to point `RpcClient` at a URL. Priority-fee estimation is a separate concern: different providers expose different fee-estimation APIs, so you pick an estimator class that matches your provider. These two choices are independent.
+
+### Pointing at a provider
+
+Pass the RPC endpoint URL to `RpcClient`:
+
+```php
+use SolanaPhpSdk\Rpc\RpcClient;
+
+// Public mainnet (rate-limited, fine for development)
+$rpc = new RpcClient('https://api.mainnet-beta.solana.com');
+
+// Helius
+$rpc = new RpcClient('https://mainnet.helius-rpc.com/?api-key=YOUR_KEY');
+
+// Triton One
+$rpc = new RpcClient('https://YOUR_NAMESPACE.rpcpool.com/YOUR_KEY');
+
+// QuickNode, Alchemy, Ankr, Chainstack, etc. — all use their own URL format
+$rpc = new RpcClient('https://your-endpoint.example.com/KEY');
+
+// Local validator
+$rpc = new RpcClient('http://127.0.0.1:8899');
+```
+
+Every provider implements the standard Solana JSON-RPC spec, so `RpcClient` just works everywhere. The URL is the only difference.
+
+If your provider authenticates via a header rather than a query-string key, pass a pre-configured `CurlHttpClient`:
+
+```php
+use SolanaPhpSdk\Rpc\Http\CurlHttpClient;
+
+$http = new CurlHttpClient(
+    timeoutSeconds: 30,
+    defaultHeaders: ['Authorization' => 'Bearer YOUR_TOKEN']
+);
+$rpc = new RpcClient('https://provider.example.com/rpc', $http);
+```
+
+### Picking a fee estimator
+
+The SDK doesn't auto-detect which estimation method your provider supports — that would require a probe RPC call with uncertain failure modes. You pick explicitly:
+
+```php
+use SolanaPhpSdk\Rpc\Fee\{StandardFeeEstimator, HeliusFeeEstimator, TritonFeeEstimator};
+
+// Works with ANY provider. Uses the standard getRecentPrioritizationFees
+// method and computes percentiles client-side. Portable, slightly less accurate.
+$fees = new StandardFeeEstimator($rpc);
+
+// Helius's native getPriorityFeeEstimate method. One RPC call returns all five
+// buckets with Helius's server-side estimator. Only works against Helius.
+$fees = new HeliusFeeEstimator($rpc);
+
+// Triton One's percentile-extended getRecentPrioritizationFees. Five RPC calls
+// (one per bucket), server-side percentile math across the full slot window.
+// Only works against Triton.
+$fees = new TritonFeeEstimator($rpc);
+```
+
+All three implement the same `FeeEstimator` interface, so downstream code doesn't care which one it has:
+
+```php
+use SolanaPhpSdk\Rpc\Fee\PriorityLevel;
+
+$microLamportsPerCU = $fees->estimateLevel($writableAccounts, PriorityLevel::MEDIUM);
+```
+
+### Quick guidance
+
+| Use case                              | Provider                          | Estimator               |
+|---------------------------------------|-----------------------------------|-------------------------|
+| Prototyping / development             | Public `api.mainnet-beta.solana.com` | `StandardFeeEstimator` |
+| Production ecom, modest volume        | Helius free/starter tier          | `HeliusFeeEstimator`    |
+| High-volume or latency-sensitive      | Triton dedicated RPC              | `TritonFeeEstimator`    |
+| Using QuickNode, Alchemy, Ankr, etc.  | Any provider URL                  | `StandardFeeEstimator`  |
+
+The estimator isn't locked in at compile time — in a merchant-facing extension you typically read the provider choice from config and wire up the right estimator at boot:
+
+```php
+$rpc = new RpcClient($config['rpc_url']);
+
+$fees = match ($config['fee_provider']) {
+    'helius'   => new HeliusFeeEstimator($rpc),
+    'triton'   => new TritonFeeEstimator($rpc),
+    default    => new StandardFeeEstimator($rpc),
+};
+```
+
+Adding support for a new provider-native estimator (QuickNode, Alchemy, Ankr) later is a ~100-line file implementing `FeeEstimator` plus one more `match` arm — no changes elsewhere.
+
 ## Example: building a USDC payment
 
 The high-level path — use `PaymentBuilder` for the common case:
@@ -266,4 +359,4 @@ Current test suite: 307 tests, 1029 assertions.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
