@@ -7,6 +7,7 @@ namespace SolanaPhpSdk\Transaction;
 use SolanaPhpSdk\Exception\InvalidArgumentException;
 use SolanaPhpSdk\Exception\SolanaException;
 use SolanaPhpSdk\Keypair\PublicKey;
+use SolanaPhpSdk\Util\Base58;
 use SolanaPhpSdk\Util\ByteBuffer;
 use SolanaPhpSdk\Util\CompactU16;
 
@@ -113,9 +114,32 @@ final class Message
         }
 
         // Normalize blockhash to raw 32 bytes.
-        $bhBytes = strlen($recentBlockhash) === 32
-            ? $recentBlockhash
-            : (new PublicKey($recentBlockhash))->toBytes();
+        //
+        // The input may be either a Base58-encoded string (the format returned
+        // by `getLatestBlockhash()`) or 32 raw bytes. Disambiguation is tricky
+        // because a 32-byte raw blockhash can coincidentally contain only bytes
+        // that are also valid Base58 alphabet characters.
+        //
+        // Resolution strategy: if the string is exactly 32 bytes long, treat
+        // it as raw binary (that's the canonical raw form; the ambiguity with
+        // a hypothetical 32-char Base58 string that happens to decode to 32
+        // bytes is extremely rare and only happens for blockhashes with
+        // essentially all-zero leading bytes). Otherwise, decode as Base58.
+        if (strlen($recentBlockhash) === 32) {
+            $bhBytes = $recentBlockhash;
+        } else {
+            if (!PublicKey::isBase58AlphabetString($recentBlockhash)) {
+                throw new InvalidArgumentException(
+                    'Invalid blockhash: neither 32 raw bytes nor a valid Base58 string'
+                );
+            }
+            $bhBytes = Base58::decode($recentBlockhash);
+            if (strlen($bhBytes) !== 32) {
+                throw new InvalidArgumentException(
+                    'Invalid blockhash: Base58 string decoded to ' . strlen($bhBytes) . ' bytes, expected 32'
+                );
+            }
+        }
 
         // Collect every account reference into a map keyed by raw pubkey bytes,
         // accumulating the strictest (isSigner || ..., isWritable || ...) flags.

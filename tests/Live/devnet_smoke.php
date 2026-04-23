@@ -106,7 +106,13 @@ use SolanaPhpSdk\SolanaPay\Url;
 // ============================================================================
 
 /** Circle's devnet USDC mint. Unchanged since 2023. */
-const DEVNET_USDC_MINT = 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr';
+/**
+ * Circle's current devnet USDC mint (per https://developers.circle.com/stablecoins/docs/usdc-on-testing-networks).
+ * This is distinct from the legacy `Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr` mint
+ * that was canonical in earlier Circle docs; the faucet at faucet.circle.com now
+ * dispenses tokens from this mint.
+ */
+const DEVNET_USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const DEVNET_USDC_DECIMALS = 6;
 
 const DEFAULT_RPC = 'https://api.devnet.solana.com';
@@ -287,7 +293,7 @@ function stepSolTransfer(RpcClient $rpc, Keypair $payer, PublicKey $merchant): b
             ->from($payer)
             ->to($merchant)
             ->amount(TEST_SOL_LAMPORTS)
-            ->withFreshBlockhash()
+            ->withFreshBlockhash(Commitment::FINALIZED)
             ->buildAndSign();
 
         info("Wire size: " . strlen($tx->serialize()) . " bytes");
@@ -426,7 +432,7 @@ function stepUsdcTransfer(RpcClient $rpc, Keypair $payer, PublicKey $merchant): 
             ->amount(TEST_USDC_BASE_UNITS)
             ->ensureRecipientAta()      // creates merchant ATA if needed
             ->memo('solana-php smoke test')
-            ->withFreshBlockhash()
+            ->withFreshBlockhash(Commitment::FINALIZED)
             ->buildAndSign();
 
         info("Wire size: " . strlen($tx->serialize()) . " bytes");
@@ -453,7 +459,7 @@ function stepUsdcTransfer(RpcClient $rpc, Keypair $payer, PublicKey $merchant): 
 
 function main(): int
 {
-    banner('Solana PHP - Live devnet smoke test');
+    banner('Solana PHP ' . \SolanaPhpSdk\SolanaPhpSdk::VERSION . ' - Live devnet smoke test');
 
     try {
         $rpcUrl = loadRpcUrl();

@@ -111,8 +111,12 @@ final class PublicKey
 
     /**
      * True if every character is in the Base58 alphabet.
+     *
+     * Public helper used for disambiguating Base58 strings from 32-byte raw
+     * binary strings in any place that accepts either form (for example,
+     * {@see \SolanaPhpSdk\Transaction\Message::compile}'s blockhash parameter).
      */
-    private static function isBase58String(string $s): bool
+    public static function isBase58AlphabetString(string $s): bool
     {
         if ($s === '') {
             return false;
@@ -124,6 +128,15 @@ final class PublicKey
             }
         }
         return true;
+    }
+
+    /**
+     * @deprecated Use {@see self::isBase58AlphabetString} instead. Kept for
+     * internal backwards compatibility.
+     */
+    private static function isBase58String(string $s): bool
+    {
+        return self::isBase58AlphabetString($s);
     }
 
     /**

@@ -53,7 +53,11 @@ final class CurlHttpClient implements HttpClient
         }
 
         $merged = array_merge(
-            ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
+            [
+                'Content-Type' => 'application/json',
+                'Accept'       => 'application/json',
+                'User-Agent'   => \SolanaPhpSdk\SolanaPhpSdk::userAgent(),
+            ],
             $this->defaultHeaders,
             $headers
         );

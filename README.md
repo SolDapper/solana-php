@@ -2,9 +2,12 @@
 
 A framework-agnostic PHP library for building Solana transactions, instructions, and integrating Solana payments into PHP applications.
 
-**Status:** All planned features are implemented and every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`). 307 unit tests, 1029 assertions.
+**Status:** All planned features are implemented, every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`), and the full transaction pipeline is end-to-end validated against Solana devnet: transactions built by this library have been signed, submitted, and confirmed on chain, including USDC `transferChecked` with on-the-fly associated-token-account creation, priority-fee estimation against a live validator, and Solana Pay URL generation. 312 unit tests, 1039 assertions.
 
-**Not yet validated:** end-to-end against a live RPC provider or a live wallet. The byte-for-byte parity is strong evidence that produced transactions will behave identically to web3.js output (same bytes in, same chain behavior out), but no transaction built by this library has yet been submitted to devnet or mainnet, and no Solana Pay URL has been tested against a real wallet app. Treat the library as beta until that live-fire testing is done. Bug reports from real-world integration are very welcome.
+**Caveats:**
+- The Solana Pay URLs emitted by this library have not yet been tested against a real mobile wallet app (Phantom, Solflare, Backpack). The URL format conforms byte-for-byte to `@solana/pay`, so wallet compatibility is expected, but not field-proven here.
+- Mainnet has only been exercised via the RPC read paths; all write-path validation has been on devnet. Mainnet writes are expected to work identically since the wire format is network-agnostic.
+- Bug reports from real-world integration are very welcome.
 
 ## Requirements
 
@@ -47,6 +50,31 @@ Solana PHP uses PSR-4 autoloading but doesn't actually require Composer at runti
 3. Use the library normally.
 
 **Caveat:** the `Psr18HttpClient` adapter requires the `psr/http-client` and `psr/http-factory` packages. Without them, that specific class can't be instantiated (you'll get a `TypeError` on its constructor). Stick to the built-in `CurlHttpClient` (which is the default for `RpcClient`) and you don't need PSR packages at all.
+
+## Versioning
+
+The current version is **0.1.0**. The authoritative version string lives in `SolanaPhpSdk\SolanaPhpSdk::VERSION` and is sent in the `User-Agent` header on every RPC request, so it shows up in your provider's logs as `solana-php/solana-sdk 0.1.0`.
+
+This library follows semantic versioning with one nuance: while on `0.x`, minor version bumps (0.1 to 0.2) may include breaking changes, and patch bumps (0.1.0 to 0.1.1) are strictly non-breaking fixes. This is the standard `0.x` convention and it gives the library room to refine its API based on feedback from early integrations without forcing a premature `2.0`.
+
+Once the library stabilizes after real-world use (probably driven by the OpenCart, Magento, and WooCommerce integrations landing), a `1.0.0` tag commits to full semver: major bumps for breaking changes, minor for features, patch for fixes.
+
+When pinning the library in your `composer.json`, we recommend:
+
+```json
+"require": {
+    "solana-php/solana-sdk": "^0.1"
+}
+```
+
+The `^0.1` constraint means "0.1.x but not 0.2.x" - this protects you from breaking changes within 0.x while still picking up non-breaking fixes. Review the changelog before upgrading across a minor boundary.
+
+You can check which version is running at any time:
+
+```php
+echo SolanaPhpSdk\SolanaPhpSdk::VERSION;
+// "0.1.0"
+```
 
 ## What's Implemented
 
@@ -348,7 +376,7 @@ composer install
 composer test-unit
 ```
 
-Current suite: 307 tests, 1029 assertions. Every wire format is validated byte-for-byte against `@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, and `borsh-rs`.
+Current suite: 312 tests, 1039 assertions. Every wire format is validated byte-for-byte against `@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, and `borsh-rs`.
 
 ### Live smoke test
 
