@@ -2,7 +2,7 @@
 
 A framework-agnostic PHP library for building Solana transactions, instructions, and integrating Solana payments into PHP applications.
 
-**Status:** Feature-complete. Every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`). 288 tests, 995 assertions.
+**Status:** Feature-complete. Every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`). 307 tests, 1029 assertions.
 
 ## Requirements
 
@@ -112,6 +112,7 @@ Ready-to-use instruction builders for the Solana native and SPL programs that ma
 - **`TokenProgram`** — `transfer` and `transferChecked` for SPL tokens (USDC, USDT, PYUSD, etc.). Token-2022 supported via program ID override parameter.
 - **`AssociatedTokenProgram`** — `findAssociatedTokenAddress` (pure off-chain PDA derivation), `create`, and `createIdempotent` (preferred for payment flows).
 - **`MemoProgram`** — attach UTF-8 memos to transactions. Supports the V2 program with optional signer verification; standard for order-ID correlation in ecommerce flows.
+- **`PaymentBuilder`** — high-level helper that bundles the compute-budget setup, ATA derivation, optional `createIdempotent`, `transferChecked`, Solana Pay references, memo attachment, blockhash fetch, and fee estimation into a fluent builder. Use this for the common ecommerce case; drop down to the primitives when you need byte-level control. See the example below.
 
 ### Solana Pay (`SolanaPhpSdk\SolanaPay`)
 
@@ -144,41 +145,59 @@ Construct and parse Solana Pay URLs — the standard URL format wallets use to c
 
 ## Example: building a USDC payment
 
+The high-level path — use `PaymentBuilder` for the common case:
+
 ```php
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Keypair\PublicKey;
-use SolanaPhpSdk\Programs\AssociatedTokenProgram;
-use SolanaPhpSdk\Programs\ComputeBudgetProgram;
-use SolanaPhpSdk\Programs\MemoProgram;
-use SolanaPhpSdk\Programs\TokenProgram;
+use SolanaPhpSdk\Programs\PaymentBuilder;
 use SolanaPhpSdk\Rpc\Fee\HeliusFeeEstimator;
 use SolanaPhpSdk\Rpc\Fee\PriorityLevel;
 use SolanaPhpSdk\Rpc\RpcClient;
-use SolanaPhpSdk\Transaction\Transaction;
 
 $rpc = new RpcClient('https://mainnet.helius-rpc.com/?api-key=...');
 $fees = new HeliusFeeEstimator($rpc);
 
-$customer = Keypair::fromSecretKey(...);           // the payer
-$merchant = new PublicKey('...');                  // receiver wallet
+$customer = Keypair::fromSecretKey(...);
+$merchant = new PublicKey('MERCHANT_WALLET...');
 $usdc = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+
+$tx = PaymentBuilder::splToken($rpc, $usdc, 6)
+    ->from($customer)
+    ->to($merchant)
+    ->amount(10_000_000)                          // 10 USDC (6 decimals)
+    ->ensureRecipientAta()                        // auto-create merchant ATA if missing
+    ->withFeeEstimate($fees, PriorityLevel::MEDIUM)
+    ->memo('order_ref:OC-2025-00042')
+    ->withFreshBlockhash()
+    ->buildAndSign();
+
+$signature = $rpc->sendTransaction($tx);
+```
+
+The low-level path — assemble the same transaction from primitives for full control:
+
+```php
+use SolanaPhpSdk\Programs\AssociatedTokenProgram;
+use SolanaPhpSdk\Programs\ComputeBudgetProgram;
+use SolanaPhpSdk\Programs\MemoProgram;
+use SolanaPhpSdk\Programs\TokenProgram;
+use SolanaPhpSdk\Transaction\Transaction;
 
 [$customerAta, ] = AssociatedTokenProgram::findAssociatedTokenAddress($customer->getPublicKey(), $usdc);
 [$merchantAta, ] = AssociatedTokenProgram::findAssociatedTokenAddress($merchant, $usdc);
-
-$microLamportsPerCU = $fees->estimateLevel([$customerAta, $merchantAta], PriorityLevel::MEDIUM);
-$blockhash = $rpc->getLatestBlockhash()['blockhash'];
+$price = $fees->estimateLevel([$customerAta, $merchantAta], PriorityLevel::MEDIUM);
 
 $tx = Transaction::new(
     [
         ComputeBudgetProgram::setComputeUnitLimit(80_000),
-        ComputeBudgetProgram::setComputeUnitPrice($microLamportsPerCU),
+        ComputeBudgetProgram::setComputeUnitPrice($price),
         AssociatedTokenProgram::createIdempotent($customer->getPublicKey(), $merchantAta, $merchant, $usdc),
         TokenProgram::transferChecked($customerAta, $usdc, $merchantAta, $customer->getPublicKey(), 10_000_000, 6),
         MemoProgram::create('order_ref:OC-2025-00042'),
     ],
     $customer->getPublicKey(),
-    $blockhash
+    $rpc->getLatestBlockhash()['blockhash']
 );
 $tx->sign($customer);
 $signature = $rpc->sendTransaction($tx);
@@ -232,7 +251,7 @@ composer install
 composer test-unit
 ```
 
-Current test suite: 288 tests, 995 assertions.
+Current test suite: 307 tests, 1029 assertions.
 
 ## Roadmap
 
