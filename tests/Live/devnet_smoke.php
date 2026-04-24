@@ -95,9 +95,12 @@ use SolanaPhpSdk\Programs\AssociatedTokenProgram;
 use SolanaPhpSdk\Programs\PaymentBuilder;
 use SolanaPhpSdk\Programs\TokenProgram;
 use SolanaPhpSdk\Rpc\Commitment;
+use SolanaPhpSdk\Rpc\ConfirmationOptions;
+use SolanaPhpSdk\Rpc\ConfirmationResult;
 use SolanaPhpSdk\Rpc\Fee\PriorityLevel;
 use SolanaPhpSdk\Rpc\Fee\StandardFeeEstimator;
 use SolanaPhpSdk\Rpc\RpcClient;
+use SolanaPhpSdk\Rpc\TransactionConfirmer;
 use SolanaPhpSdk\SolanaPay\TransferRequest;
 use SolanaPhpSdk\SolanaPay\Url;
 
@@ -210,36 +213,23 @@ function loadRpcUrl(): string
 // ============================================================================
 
 /**
- * Poll getSignatureStatuses until a signature is confirmed or we time out.
+ * Wait for a signature to confirm using the SDK's TransactionConfirmer.
  *
- * @return string The terminal confirmationStatus ('confirmed'/'finalized')
- *                or 'timeout' if we gave up.
+ * Returns the ConfirmationResult so callers can branch on outcome and log
+ * diagnostics. The smoke test uses this in two places: a plain SOL
+ * transfer (60s timeout, default `confirmed`) and the larger USDC ATA
+ * flow (90s timeout, default `confirmed`). Pass a custom
+ * ConfirmationOptions to override.
  */
 function waitForConfirmation(
     RpcClient $rpc,
     string $signature,
-    int $timeoutSeconds = 60
-): string {
-    $deadline = time() + $timeoutSeconds;
-    $backoff = 1;
-
-    while (time() < $deadline) {
-        $statuses = $rpc->getSignatureStatuses([$signature]);
-        $status = $statuses[0] ?? null;
-        if ($status !== null) {
-            if ($status['err'] !== null) {
-                throw new RuntimeException(
-                    'Transaction failed on chain: ' . json_encode($status['err'])
-                );
-            }
-            if (in_array($status['confirmationStatus'], ['confirmed', 'finalized'], true)) {
-                return (string) $status['confirmationStatus'];
-            }
-        }
-        sleep($backoff);
-        $backoff = min($backoff + 1, 5);
-    }
-    return 'timeout';
+    int $timeoutSeconds = 60,
+    ?ConfirmationOptions $options = null
+): ConfirmationResult {
+    $options ??= ConfirmationOptions::confirmed($timeoutSeconds);
+    $confirmer = new TransactionConfirmer($rpc);
+    return $confirmer->awaitConfirmation($signature, $options);
 }
 
 /**
@@ -303,11 +293,17 @@ function stepSolTransfer(RpcClient $rpc, Keypair $payer, PublicKey $merchant): b
         info("Explorer: https://explorer.solana.com/tx/{$sig}?cluster=devnet");
 
         $status = waitForConfirmation($rpc, $sig);
-        if ($status === 'timeout') {
+        if ($status->outcome === ConfirmationResult::OUTCOME_TIMEOUT) {
             fail("Transaction did not confirm within 60s");
             return false;
         }
-        pass("Transaction confirmed ({$status})");
+        if (!$status->isSuccess()) {
+            fail("Transaction outcome: {$status->outcome}" .
+                 ($status->error !== null ? ' err=' . json_encode($status->error) : ''));
+            return false;
+        }
+        pass("Transaction confirmed ({$status->confirmationStatus}, " .
+             "{$status->elapsedSeconds}s, {$status->pollCount} polls)");
         return true;
     } catch (\Throwable $e) {
         fail(get_class($e) . ': ' . $e->getMessage());
@@ -443,11 +439,17 @@ function stepUsdcTransfer(RpcClient $rpc, Keypair $payer, PublicKey $merchant): 
         info("Explorer: https://explorer.solana.com/tx/{$sig}?cluster=devnet");
 
         $status = waitForConfirmation($rpc, $sig, 90);
-        if ($status === 'timeout') {
+        if ($status->outcome === ConfirmationResult::OUTCOME_TIMEOUT) {
             fail("Transaction did not confirm within 90s");
             return ['passed' => false, 'skipped' => false];
         }
-        pass("USDC transfer confirmed ({$status})");
+        if (!$status->isSuccess()) {
+            fail("USDC transfer outcome: {$status->outcome}" .
+                 ($status->error !== null ? ' err=' . json_encode($status->error) : ''));
+            return ['passed' => false, 'skipped' => false];
+        }
+        pass("USDC transfer confirmed ({$status->confirmationStatus}, " .
+             "{$status->elapsedSeconds}s, {$status->pollCount} polls)");
         return ['passed' => true, 'skipped' => false];
     } catch (\Throwable $e) {
         fail(get_class($e) . ': ' . $e->getMessage());

@@ -9,9 +9,12 @@ use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Rpc\Commitment;
 use SolanaPhpSdk\Rpc\ComputeUnitEstimator;
+use SolanaPhpSdk\Rpc\ConfirmationOptions;
+use SolanaPhpSdk\Rpc\ConfirmationResult;
 use SolanaPhpSdk\Rpc\Fee\FeeEstimator;
 use SolanaPhpSdk\Rpc\Fee\PriorityLevel;
 use SolanaPhpSdk\Rpc\RpcClient;
+use SolanaPhpSdk\Rpc\TransactionConfirmer;
 use SolanaPhpSdk\Transaction\Transaction;
 use SolanaPhpSdk\Transaction\TransactionInstruction;
 
@@ -92,6 +95,15 @@ final class PaymentBuilder
     private array $references = [];
 
     private ?string $blockhash = null;
+
+    /**
+     * The lastValidBlockHeight from the blockhash fetch, captured when
+     * `withFreshBlockhash()` is used. Lets {@see self::buildSignAndSubmit()}
+     * detect blockhash expiry during the confirmation wait. Null when the
+     * blockhash was set externally via {@see self::blockhash()}, since we
+     * don't know the validity window in that case.
+     */
+    private ?int $lastValidBlockHeight = null;
 
     private int $cuLimit = self::DEFAULT_CU_LIMIT;
 
@@ -225,6 +237,8 @@ final class PaymentBuilder
     public function blockhash(string $blockhash): self
     {
         $this->blockhash = $blockhash;
+        // Caller provided the blockhash externally; we don't know its validity window.
+        $this->lastValidBlockHeight = null;
         return $this;
     }
 
@@ -292,7 +306,10 @@ final class PaymentBuilder
      */
     public function withFreshBlockhash(?string $commitment = null): self
     {
-        $this->blockhash = $this->rpc->getLatestBlockhash($commitment)['blockhash'];
+        $latest = $this->rpc->getLatestBlockhash($commitment);
+        $this->blockhash = $latest['blockhash'];
+        $lastValid = $latest['lastValidBlockHeight'] ?? null;
+        $this->lastValidBlockHeight = is_int($lastValid) ? $lastValid : null;
         return $this;
     }
 
@@ -428,6 +445,52 @@ final class PaymentBuilder
         $tx = $this->build();
         $tx->sign($this->fromKeypair, ...$additionalSigners);
         return $tx;
+    }
+
+    /**
+     * Build, sign, submit, and wait for the transaction to confirm in
+     * one fluent call. The most ergonomic option for the common ecom
+     * checkout flow.
+     *
+     * Re-broadcast is enabled by default during the wait - validators
+     * sometimes silently drop transactions, and re-submitting the same
+     * signed wire bytes every few seconds substantially improves landing
+     * rates on a busy mainnet. To disable, pass an options object with
+     * a null rebroadcastWireBytes (or just use the lower-level
+     * {@see self::buildAndSign()} + manual submit + manual confirm flow).
+     *
+     * @param ConfirmationOptions|null $options Confirmation strategy. Default
+     *        is `ConfirmationOptions::confirmed()` with rebroadcast enabled.
+     * @param Keypair[] $additionalSigners Co-signers for multi-sig payment flows.
+     *
+     * @throws InvalidArgumentException If from() was called with a bare PublicKey.
+     * @throws \SolanaPhpSdk\Exception\RpcException If submission itself fails (the
+     *         confirmation wait swallows transient RPC errors and retries).
+     */
+    public function buildSignAndSubmit(
+        ?ConfirmationOptions $options = null,
+        Keypair ...$additionalSigners
+    ): ConfirmationResult {
+        $tx = $this->buildAndSign(...$additionalSigners);
+        $wire = $tx->serialize();
+
+        // Default to confirmed-with-rebroadcast for the common ecom case.
+        // Caller can override with finalized or with rebroadcast disabled.
+        $options ??= ConfirmationOptions::confirmed()->withRebroadcast($wire);
+        // If caller passed options without setting rebroadcast bytes, fill them in -
+        // we have the wire and they almost certainly want it re-broadcast.
+        if ($options->rebroadcastWireBytes === null) {
+            $options = $options->withRebroadcast($wire, $options->rebroadcastEvery);
+        }
+        // If caller didn't set blockhash expiry tracking but we have the height
+        // from withFreshBlockhash, layer it on - automatic expiry detection.
+        if ($options->lastValidBlockHeight === null && $this->lastValidBlockHeight !== null) {
+            $options = $options->withBlockhashExpiry($this->lastValidBlockHeight);
+        }
+
+        $signature = $this->rpc->sendTransaction($tx);
+        $confirmer = new TransactionConfirmer($this->rpc);
+        return $confirmer->awaitConfirmation($signature, $options);
     }
 
     // ----- Internals ------------------------------------------------------

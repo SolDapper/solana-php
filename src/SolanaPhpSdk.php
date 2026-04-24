@@ -37,7 +37,7 @@ final class SolanaPhpSdk
      * Format: either `X.Y.Z` for a released tag, or `X.Y.Z-dev` for a
      * development commit between tags.
      */
-    public const VERSION = '0.1.0';
+    public const VERSION = '0.1.1';
 
     /**
      * The package name as published on Packagist. Used as the prefix in

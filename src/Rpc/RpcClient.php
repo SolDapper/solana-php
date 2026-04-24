@@ -230,6 +230,28 @@ final class RpcClient
     }
 
     /**
+     * Fetch the chain's current block height.
+     *
+     * Used by {@see TransactionConfirmer} to detect blockhash expiry: when
+     * the chain's height exceeds the `lastValidBlockHeight` reported by
+     * `getLatestBlockhash`, the transaction will never land and the
+     * confirmation wait can abort early instead of timing out.
+     *
+     * @return int|string u64 block height. Most callers can safely cast
+     *         to int but very long-running chains may exceed PHP_INT_MAX
+     *         on 32-bit systems.
+     */
+    public function getBlockHeight(?string $commitment = null)
+    {
+        $result = $this->call('getBlockHeight', [
+            ['commitment' => $commitment ?? $this->defaultCommitment],
+        ]);
+        // RPC may return either a bare number or {value: number} depending on version.
+        $value = is_array($result) ? ($result['value'] ?? $result) : $result;
+        return $this->normalizeU64($value);
+    }
+
+    /**
      * Submit a signed Transaction to the network.
      *
      * @param SignedTransaction $transaction Either a legacy {@see Transaction}

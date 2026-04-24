@@ -6,7 +6,7 @@
 
 A framework-agnostic PHP library for building Solana transactions, instructions, and integrating Solana payments into PHP applications.
 
-**Status:** All planned features are implemented, every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`), and the full transaction pipeline is end-to-end validated against Solana devnet: transactions built by this library have been signed, submitted, and confirmed on chain, including USDC `transferChecked` with on-the-fly associated-token-account creation, priority-fee estimation against a live validator, and Solana Pay URL generation. 329 unit tests, 1074 assertions.
+**Status:** All planned features are implemented, every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`), and the full transaction pipeline is end-to-end validated against Solana devnet: transactions built by this library have been signed, submitted, and confirmed on chain, including USDC `transferChecked` with on-the-fly associated-token-account creation, priority-fee estimation against a live validator, and Solana Pay URL generation. 348 unit tests, 1121 assertions.
 
 **Caveats:**
 - The Solana Pay URLs emitted by this library have not yet been tested against a real mobile wallet app (Phantom, Solflare, Backpack). The URL format conforms byte-for-byte to `@solana/pay`, so wallet compatibility is expected, but not field-proven here.
@@ -120,7 +120,7 @@ echo SolanaPhpSdk\SolanaPhpSdk::VERSION;
 - **`SignedTransaction`**: shared interface so `RpcClient::sendTransaction()` and `simulateTransaction()` accept either legacy or v0 transactions transparently.
 
 ### RPC client (`SolanaPhpSdk\Rpc`)
-- **`RpcClient`**: speaks standard Solana JSON-RPC 2.0. Covers the core payment-workflow methods: `getBalance`, `getAccountInfo`, `getMinimumBalanceForRentExemption`, `getLatestBlockhash`, `sendTransaction`, `sendRawTransaction`, `simulateTransaction`, `getSignatureStatuses`, `getRecentPrioritizationFees`, plus a generic `call()` escape hatch for any other JSON-RPC method.
+- **`RpcClient`**: speaks standard Solana JSON-RPC 2.0. Covers the core payment-workflow methods: `getBalance`, `getAccountInfo`, `getMinimumBalanceForRentExemption`, `getLatestBlockhash`, `getBlockHeight`, `sendTransaction`, `sendRawTransaction`, `simulateTransaction`, `getSignatureStatuses`, `getRecentPrioritizationFees`, plus a generic `call()` escape hatch for any other JSON-RPC method.
 - **`Commitment`**: constants for PROCESSED / CONFIRMED / FINALIZED.
 - **HTTP transport** is pluggable via the `HttpClient` interface:
   - `CurlHttpClient`: zero-dependency default using PHP's cURL extension.
@@ -146,6 +146,19 @@ The priority fee a transaction pays is `compute_unit_price * compute_unit_limit`
 - **`ComputeUnitEstimator`**: `estimateLegacy()` and `estimateV0()` methods that take instructions + fee payer + blockhash and return a `ComputeUnitEstimate`. Works with any transaction built via primitives.
 - **`ComputeUnitEstimate`**: value object with `unitsConsumed`, `recommendedLimit`, `multiplier`, `simulationLogs`, `simulationSucceeded`, and raw simulation error. Lets you inspect what happened during simulation, not just the number.
 - **High-level shortcut**: `PaymentBuilder::withSimulatedComputeUnitLimit($multiplier, $floor)` wraps the primitive for the common payment flow. One fluent method call, one RPC request, no guesswork.
+
+### Transaction confirmation (`SolanaPhpSdk\Rpc\TransactionConfirmer`)
+
+Submitting a transaction is the easy part. The hard part is knowing it actually landed: validators sometimes silently drop transactions under load, blockhashes expire after 150 slots (~60 seconds), and Solana's optimistic-confirmation model means there are three different "confirmed" states with different latency / safety tradeoffs.
+
+`TransactionConfirmer` polls `getSignatureStatuses` with exponential-ish backoff until the transaction reaches the requested commitment level, with three production-grade additions: optional blockhash-expiry detection (abort early when the chain passes `lastValidBlockHeight` rather than waiting for the timeout), optional automatic rebroadcast (re-submit the same wire bytes every few seconds during the wait, the canonical fix for silent validator drops), and batched multi-signature waits (one `getSignatureStatuses` call per round regardless of how many signatures are pending).
+
+- **`Commitment` levels**: `processed` (~400ms, may be skipped), `confirmed` (~1-2s on mainnet, supermajority voted), `finalized` (~13s, mathematically irreversible).
+- **`ConfirmationOptions`**: factories `::confirmed()` (default for ecom), `::finalized()` (high-value), `::processed()` (UI hints only). Fluent `withRebroadcast($wireBytes, $every)` and `withBlockhashExpiry($lastValidBlockHeight)` for opting in.
+- **`ConfirmationResult`**: terminal outcome (`OUTCOME_CONFIRMED`, `OUTCOME_FINALIZED`, `OUTCOME_FAILED`, `OUTCOME_EXPIRED`, `OUTCOME_TIMEOUT`) plus diagnostic fields (slot, on-chain error, poll count, elapsed seconds, rebroadcast count). `isSuccess()` covers the common branch.
+- **High-level shortcut**: `PaymentBuilder::buildSignAndSubmit($options?, ...$cosigners)` builds, signs, submits, and waits in one call. Auto-layers rebroadcast and blockhash-expiry tracking onto user-supplied options.
+
+The right default for ecommerce is `confirmed`. Mainnet rollback of a confirmed transaction has not been observed since the network stabilized in 2021, so the 12-second wait until `finalized` is generally not worth the UX cost. For high-value transfers or audit logs, the recommended pattern is two-stage: declare the order paid at `confirmed` for fast checkout, then asynchronously verify `finalized` in a background job for the audit record. See the [Confirming transactions](#confirming-transactions) example below.
 
 ### Program instructions (`SolanaPhpSdk\Programs`)
 
@@ -385,6 +398,141 @@ if ($signature !== null) {
 }
 ```
 
+## Confirming transactions
+
+Submitting is one thing. Knowing the transaction actually landed is another. The `TransactionConfirmer` handles the polling, backoff, blockhash-expiry detection, and optional rebroadcast in one place.
+
+The simplest pattern, when you want to build, sign, submit, and wait all in one call:
+
+```php
+use SolanaPhpSdk\Programs\PaymentBuilder;
+use SolanaPhpSdk\Rpc\ConfirmationResult;
+use SolanaPhpSdk\Rpc\RpcClient;
+
+$rpc = new RpcClient('https://api.mainnet-beta.solana.com');
+
+$result = PaymentBuilder::sol($rpc)
+    ->from($payerKeypair)
+    ->to($recipientPubkey)
+    ->amount(1_000_000)         // lamports
+    ->withFreshBlockhash()
+    ->withSimulatedComputeUnitLimit()
+    ->buildSignAndSubmit();      // returns ConfirmationResult
+
+if ($result->isSuccess()) {
+    // Transaction is on chain at `confirmed` commitment (default).
+    // Slot, signature, and elapsed time available for logging.
+    error_log("Paid: {$result->signature} in {$result->elapsedSeconds}s");
+} else {
+    // Inspect $result->outcome: OUTCOME_FAILED, OUTCOME_EXPIRED, OUTCOME_TIMEOUT.
+    // $result->error holds the on-chain error if outcome is FAILED.
+}
+```
+
+`buildSignAndSubmit()` defaults to `confirmed` commitment with rebroadcast enabled and (if `withFreshBlockhash()` was used) blockhash-expiry tracking enabled automatically. For most ecommerce flows this is what you want.
+
+### Choosing a commitment level
+
+Solana's confirmation model has three levels:
+
+- **`processed`**: ~400ms. The validator has seen the transaction but the slot may be skipped. Use only for UI hints, never for payment verification.
+- **`confirmed`**: ~1-2 seconds on mainnet. A supermajority of validators have voted on the block. Theoretically rollback-able, but mainnet rollback of a confirmed transaction has not been observed since the network stabilized in 2021. The right default for ecommerce.
+- **`finalized`**: ~13 seconds. Committed permanently and mathematically impossible to reverse. Use for high-value transactions or settlement-grade records.
+
+For high-value flows where you cannot accept even theoretical rollback risk:
+
+```php
+use SolanaPhpSdk\Rpc\ConfirmationOptions;
+
+$result = PaymentBuilder::sol($rpc)
+    ->from($payerKeypair)
+    ->to($recipientPubkey)
+    ->amount(50_000_000_000)        // 50 SOL
+    ->withFreshBlockhash()
+    ->buildSignAndSubmit(ConfirmationOptions::finalized());
+```
+
+### The two-stage pattern (recommended for high-value ecommerce)
+
+Confirm immediately for fast UX, then verify finalized in a background job for the audit record. This gives the customer a near-instant checkout confirmation without compromising on the eventual settlement guarantee.
+
+```php
+use SolanaPhpSdk\Rpc\ConfirmationOptions;
+use SolanaPhpSdk\Rpc\TransactionConfirmer;
+
+// Foreground: checkout request, return ASAP.
+$result = PaymentBuilder::sol($rpc)
+    ->from($payerKeypair)
+    ->to($recipientPubkey)
+    ->amount($lamports)
+    ->withFreshBlockhash()
+    ->buildSignAndSubmit();      // ~1-2s
+
+if ($result->isSuccess()) {
+    $orderRepo->markPaid($orderId, $result->signature);
+    // Customer sees "Payment confirmed!" immediately.
+    // Queue a background job for the finalized check.
+    $jobs->dispatch(new VerifyFinalizedJob($result->signature, $orderId));
+}
+
+// Background job: VerifyFinalizedJob::handle()
+$confirmer = new TransactionConfirmer($rpc);
+$finalized = $confirmer->awaitConfirmation(
+    $signature,
+    ConfirmationOptions::finalized()
+);
+
+if ($finalized->isSuccess()) {
+    $orderRepo->markFinalized($orderId);   // audit log: irreversibly settled
+} else {
+    // Extremely rare: the confirmed tx didn't reach finalized.
+    // Investigate and probably refund.
+    $alerts->raise("Order {$orderId} confirmed but not finalized", $finalized);
+}
+```
+
+### Lower-level confirmation (decoupled submission and waiting)
+
+If you want to submit and wait separately (e.g. submit synchronously, return the signature to the client, and let the client poll):
+
+```php
+use SolanaPhpSdk\Rpc\ConfirmationOptions;
+use SolanaPhpSdk\Rpc\TransactionConfirmer;
+
+// Submit only.
+$tx = PaymentBuilder::sol($rpc)->from($payer)->to($recipient)->amount($lamports)
+    ->withFreshBlockhash()
+    ->buildAndSign();
+$signature = $rpc->sendTransaction($tx);
+
+// Later (different request, different process, doesn't matter):
+$confirmer = new TransactionConfirmer($rpc);
+$result = $confirmer->awaitConfirmation(
+    $signature,
+    (new ConfirmationOptions())
+        ->withRebroadcast($tx->serialize(), 5)
+        ->withBlockhashExpiry($lastValidBlockHeight)
+);
+```
+
+### Waiting on multiple signatures
+
+Useful when you've batched several payouts and want to know which ones landed:
+
+```php
+$results = $confirmer->awaitMultiple([$sig1, $sig2, $sig3]);
+
+foreach ($results as $sig => $result) {
+    if ($result->isSuccess()) {
+        echo "{$sig}: success\n";
+    } else {
+        echo "{$sig}: {$result->outcome}\n";
+    }
+}
+```
+
+Each round uses a single batched `getSignatureStatuses` call regardless of how many signatures are pending, so RPC load stays linear in poll-count, not signature-count.
+
 ## Framework Integrations
 
 Solana PHP is deliberately framework-agnostic. It has zero runtime dependencies beyond PHP extensions and makes no assumptions about your application framework, routing, or persistence layer.
@@ -400,7 +548,7 @@ composer install
 composer test-unit
 ```
 
-Current suite: 329 tests, 1074 assertions. Every wire format is validated byte-for-byte against `@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, and `borsh-rs`.
+Current suite: 348 tests, 1121 assertions. Every wire format is validated byte-for-byte against `@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, and `borsh-rs`.
 
 ### Live smoke test
 
