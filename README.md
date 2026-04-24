@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo-256.png" alt="Solana PHP" width="180" />
+</p>
+
 # Solana PHP
 
 A framework-agnostic PHP library for building Solana transactions, instructions, and integrating Solana payments into PHP applications.
