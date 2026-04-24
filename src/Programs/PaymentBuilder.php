@@ -8,6 +8,7 @@ use SolanaPhpSdk\Exception\InvalidArgumentException;
 use SolanaPhpSdk\Keypair\Keypair;
 use SolanaPhpSdk\Keypair\PublicKey;
 use SolanaPhpSdk\Rpc\Commitment;
+use SolanaPhpSdk\Rpc\ComputeUnitEstimator;
 use SolanaPhpSdk\Rpc\Fee\FeeEstimator;
 use SolanaPhpSdk\Rpc\Fee\PriorityLevel;
 use SolanaPhpSdk\Rpc\RpcClient;
@@ -315,6 +316,62 @@ final class PaymentBuilder
     }
 
     /**
+     * Measure actual compute-unit consumption via `simulateTransaction` and
+     * set the CU limit to the observed value times a safety multiplier.
+     *
+     * Makes one RPC call (the simulation). Must be called AFTER from(), to(),
+     * and amount() are set - otherwise there's no business logic to simulate.
+     * Can be called in any order relative to the blockhash-setting methods;
+     * simulation uses `replaceRecentBlockhash: true` internally and doesn't
+     * need a real blockhash.
+     *
+     * Why this matters: a naive 200,000 CU default works for most payments but
+     * overpays priority fees by ~400x on simple transfers (which actually use
+     * ~450 CU). On high volume this is real money. A too-low default fails on
+     * chain when hitting heavier flows. Simulation plus a 10% margin gets
+     * both right with no guesswork.
+     *
+     * For transactions touching volatile state (price oracles, AMM pools)
+     * where slot-to-slot CU variance is higher, bump the multiplier to 1.2
+     * or 1.3. 1.1 is fine for deterministic flows like payment transfers.
+     *
+     * @param float $multiplier Safety margin applied to the simulated value.
+     *        Default 1.1 (10% headroom). Must be >= 1.0.
+     * @param int $floor Minimum CU limit regardless of simulation result.
+     *        Default 1000. Guards against implausibly low simulation values.
+     *
+     * @throws InvalidArgumentException If from/to/amount are not yet set,
+     *         or if $multiplier/$floor are invalid.
+     * @throws \SolanaPhpSdk\Exception\RpcException On RPC-level failures.
+     */
+    public function withSimulatedComputeUnitLimit(float $multiplier = 1.1, int $floor = 1000): self
+    {
+        if ($this->from === null || $this->to === null || $this->amount === null) {
+            throw new InvalidArgumentException(
+                'withSimulatedComputeUnitLimit() requires from(), to(), and amount() to be set first'
+            );
+        }
+
+        $businessIxs = $this->assembleBusinessInstructions();
+
+        // Any 32 raw bytes work here because simulateTransaction uses
+        // replaceRecentBlockhash: true. We don't want to force a network
+        // call to fetch a real blockhash just for simulation.
+        $placeholderBlockhash = str_repeat("\x00", 32);
+
+        $estimate = (new ComputeUnitEstimator($this->rpc))->estimateLegacy(
+            $businessIxs,
+            $this->from,
+            $placeholderBlockhash,
+            $multiplier,
+            $floor
+        );
+
+        $this->cuLimit = $estimate->recommendedLimit;
+        return $this;
+    }
+
+    /**
      * Check whether the recipient's ATA exists. If it does not, automatically
      * include a createIdempotent instruction in the transaction. If it does
      * exist, skip the create (saving ~20k CUs).
@@ -380,13 +437,29 @@ final class PaymentBuilder
      */
     private function assembleInstructions(): array
     {
-        $ixs = [];
-
         // Compute budget instructions come first (best practice — they apply
         // to the whole transaction regardless of position, but convention is
         // to emit them early for easy visual inspection).
-        $ixs[] = ComputeBudgetProgram::setComputeUnitLimit($this->cuLimit);
-        $ixs[] = ComputeBudgetProgram::setComputeUnitPrice($this->cuPrice);
+        return array_merge(
+            [
+                ComputeBudgetProgram::setComputeUnitLimit($this->cuLimit),
+                ComputeBudgetProgram::setComputeUnitPrice($this->cuPrice),
+            ],
+            $this->assembleBusinessInstructions()
+        );
+    }
+
+    /**
+     * Assemble only the business-logic instructions, excluding the
+     * ComputeBudgetProgram prefix. Used by simulation code paths that need
+     * to measure CU consumption without double-counting the compute-budget
+     * instructions themselves (which are cheap but not zero).
+     *
+     * @return array<int, TransactionInstruction>
+     */
+    private function assembleBusinessInstructions(): array
+    {
+        $ixs = [];
 
         if ($this->splTokenMint !== null) {
             // SPL token flow

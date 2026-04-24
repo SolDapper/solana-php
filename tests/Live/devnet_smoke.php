@@ -293,6 +293,7 @@ function stepSolTransfer(RpcClient $rpc, Keypair $payer, PublicKey $merchant): b
             ->from($payer)
             ->to($merchant)
             ->amount(TEST_SOL_LAMPORTS)
+            ->withSimulatedComputeUnitLimit(1.1)      // simulate CU usage + 10% headroom
             ->withFreshBlockhash(Commitment::FINALIZED)
             ->buildAndSign();
 
@@ -432,6 +433,7 @@ function stepUsdcTransfer(RpcClient $rpc, Keypair $payer, PublicKey $merchant): 
             ->amount(TEST_USDC_BASE_UNITS)
             ->ensureRecipientAta()      // creates merchant ATA if needed
             ->memo('solana-php smoke test')
+            ->withSimulatedComputeUnitLimit(1.2)   // simulate CU usage + 20% headroom (ATA creation has more variance)
             ->withFreshBlockhash(Commitment::FINALIZED)
             ->buildAndSign();
 

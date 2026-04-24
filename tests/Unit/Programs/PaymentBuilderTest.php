@@ -421,4 +421,40 @@ final class PaymentBuilderTest extends TestCase
             MemoProgram::PROGRAM_ID_V2,
         ], self::programIdsOf($tx));
     }
+
+    // ----- Simulated compute unit limit ----------------------------------
+
+    public function testWithSimulatedComputeUnitLimitSetsCuLimit(): void
+    {
+        [$rpc, $mock] = $this->newRpc();
+        // Simulate returns 5000 CU consumed
+        $mock->on('simulateTransaction')->respond([
+            'value' => ['unitsConsumed' => 5000, 'logs' => [], 'err' => null],
+        ]);
+
+        $tx = PaymentBuilder::sol($rpc)
+            ->from($this->customer)
+            ->to($this->merchant)
+            ->amount(100)
+            ->withSimulatedComputeUnitLimit(1.2)
+            ->blockhash(self::BLOCKHASH)
+            ->build();
+
+        // 5000 * 1.2 = 6000, above the 1000 floor -> CU limit should be 6000.
+        // The setComputeUnitLimit ix data is 0x02 + u32 LE(6000).
+        // 6000 = 0x00001770 -> LE bytes 70170000
+        $cuLimitIx = self::instructionData($tx, 0);
+        $this->assertSame('0270170000', bin2hex($cuLimitIx),
+            'CU limit should be set to ceil(5000 * 1.2) = 6000');
+    }
+
+    public function testWithSimulatedComputeUnitLimitRequiresFromToAmount(): void
+    {
+        [$rpc, ] = $this->newRpc();
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('from(), to(), and amount() to be set first');
+
+        PaymentBuilder::sol($rpc)
+            ->withSimulatedComputeUnitLimit(); // called before from/to/amount
+    }
 }

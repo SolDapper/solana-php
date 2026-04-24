@@ -6,7 +6,7 @@
 
 A framework-agnostic PHP library for building Solana transactions, instructions, and integrating Solana payments into PHP applications.
 
-**Status:** All planned features are implemented, every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`), and the full transaction pipeline is end-to-end validated against Solana devnet: transactions built by this library have been signed, submitted, and confirmed on chain, including USDC `transferChecked` with on-the-fly associated-token-account creation, priority-fee estimation against a live validator, and Solana Pay URL generation. 312 unit tests, 1039 assertions.
+**Status:** All planned features are implemented, every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`), and the full transaction pipeline is end-to-end validated against Solana devnet: transactions built by this library have been signed, submitted, and confirmed on chain, including USDC `transferChecked` with on-the-fly associated-token-account creation, priority-fee estimation against a live validator, and Solana Pay URL generation. 329 unit tests, 1074 assertions.
 
 **Caveats:**
 - The Solana Pay URLs emitted by this library have not yet been tested against a real mobile wallet app (Phantom, Solflare, Backpack). The URL format conforms byte-for-byte to `@solana/pay`, so wallet compatibility is expected, but not field-proven here.
@@ -136,6 +136,16 @@ Different RPC providers expose fee-market data in incompatible ways. Solana PHP 
 - **`StandardFeeEstimator`**: works with any provider. Uses `getRecentPrioritizationFees` and computes percentiles client-side. Supports a floor value and customizable percentile-to-bucket mapping.
 - **`HeliusFeeEstimator`**: uses Helius's native `getPriorityFeeEstimate` method. One RPC call returns all five buckets.
 - **`TritonFeeEstimator`**: uses Triton One's percentile-extended `getRecentPrioritizationFees`. One call per bucket (5 total) but uses server-side percentile computation across the full slot window.
+
+### Compute unit estimation (`SolanaPhpSdk\Rpc\ComputeUnitEstimator`)
+
+The priority fee a transaction pays is `compute_unit_price * compute_unit_limit`. A naive default like 200,000 CU works for most payment transactions but has two real problems: it's too low for heavier flows (DEX swaps, NFT mints) and causes on-chain failures, while being ~400x too high for simple transfers, leaving real money on the table when the chain is congested.
+
+`ComputeUnitEstimator` uses `simulateTransaction` to measure actual CU consumption, then applies a safety multiplier so slot-to-slot variation does not cause on-chain failures. Matches the canonical web3.js recipe (simulate with `replaceRecentBlockhash: true, sigVerify: false`, read `unitsConsumed`, multiply by ~1.1).
+
+- **`ComputeUnitEstimator`**: `estimateLegacy()` and `estimateV0()` methods that take instructions + fee payer + blockhash and return a `ComputeUnitEstimate`. Works with any transaction built via primitives.
+- **`ComputeUnitEstimate`**: value object with `unitsConsumed`, `recommendedLimit`, `multiplier`, `simulationLogs`, `simulationSucceeded`, and raw simulation error. Lets you inspect what happened during simulation, not just the number.
+- **High-level shortcut**: `PaymentBuilder::withSimulatedComputeUnitLimit($multiplier, $floor)` wraps the primitive for the common payment flow. One fluent method call, one RPC request, no guesswork.
 
 ### Program instructions (`SolanaPhpSdk\Programs`)
 
@@ -295,6 +305,7 @@ $tx = PaymentBuilder::splToken($rpc, $usdc, 6)
     ->amount(10_000_000)                          // 10 USDC (6 decimals)
     ->ensureRecipientAta()                        // auto-create merchant ATA if missing
     ->withFeeEstimate($fees, PriorityLevel::MEDIUM)
+    ->withSimulatedComputeUnitLimit(1.1)          // measure actual CU usage + 10% headroom
     ->memo('order_ref:OC-2025-00042')
     ->withFreshBlockhash()
     ->buildAndSign();
@@ -309,22 +320,31 @@ use SolanaPhpSdk\Programs\AssociatedTokenProgram;
 use SolanaPhpSdk\Programs\ComputeBudgetProgram;
 use SolanaPhpSdk\Programs\MemoProgram;
 use SolanaPhpSdk\Programs\TokenProgram;
+use SolanaPhpSdk\Rpc\ComputeUnitEstimator;
 use SolanaPhpSdk\Transaction\Transaction;
 
 [$customerAta, ] = AssociatedTokenProgram::findAssociatedTokenAddress($customer->getPublicKey(), $usdc);
 [$merchantAta, ] = AssociatedTokenProgram::findAssociatedTokenAddress($merchant, $usdc);
 $price = $fees->estimateLevel([$customerAta, $merchantAta], PriorityLevel::MEDIUM);
+$blockhash = $rpc->getLatestBlockhash()['blockhash'];
+
+// Measure actual CU usage before building the final transaction.
+$businessIxs = [
+    AssociatedTokenProgram::createIdempotent($customer->getPublicKey(), $merchantAta, $merchant, $usdc),
+    TokenProgram::transferChecked($customerAta, $usdc, $merchantAta, $customer->getPublicKey(), 10_000_000, 6),
+    MemoProgram::create('order_ref:OC-2025-00042'),
+];
+$estimator = new ComputeUnitEstimator($rpc);
+$estimate = $estimator->estimateLegacy($businessIxs, $customer->getPublicKey(), $blockhash, 1.1);
 
 $tx = Transaction::new(
     [
-        ComputeBudgetProgram::setComputeUnitLimit(80_000),
+        ComputeBudgetProgram::setComputeUnitLimit($estimate->recommendedLimit),
         ComputeBudgetProgram::setComputeUnitPrice($price),
-        AssociatedTokenProgram::createIdempotent($customer->getPublicKey(), $merchantAta, $merchant, $usdc),
-        TokenProgram::transferChecked($customerAta, $usdc, $merchantAta, $customer->getPublicKey(), 10_000_000, 6),
-        MemoProgram::create('order_ref:OC-2025-00042'),
+        ...$businessIxs,
     ],
     $customer->getPublicKey(),
-    $rpc->getLatestBlockhash()['blockhash']
+    $blockhash
 );
 $tx->sign($customer);
 $signature = $rpc->sendTransaction($tx);
@@ -380,7 +400,7 @@ composer install
 composer test-unit
 ```
 
-Current suite: 312 tests, 1039 assertions. Every wire format is validated byte-for-byte against `@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, and `borsh-rs`.
+Current suite: 329 tests, 1074 assertions. Every wire format is validated byte-for-byte against `@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, and `borsh-rs`.
 
 ### Live smoke test
 
