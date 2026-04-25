@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SolanaPhpSdk\Tests\Unit\Util;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use SolanaPhpSdk\Exception\InvalidArgumentException;
 use SolanaPhpSdk\Util\Base58;
@@ -26,8 +27,9 @@ final class Base58Test extends TestCase
     }
 
     /**
-     * @dataProvider knownVectorProvider
+     * Encode equivalence: GMP backend produces the canonical base58 from a hex input.
      */
+    #[DataProvider('knownVectorProvider')]
     public function testEncodeWithGmp(string $hex, string $expectedBase58): void
     {
         if (!extension_loaded('gmp')) {
@@ -38,8 +40,9 @@ final class Base58Test extends TestCase
     }
 
     /**
-     * @dataProvider knownVectorProvider
+     * Decode equivalence: GMP backend reproduces the original hex bytes from base58.
      */
+    #[DataProvider('knownVectorProvider')]
     public function testDecodeWithGmp(string $hex, string $base58): void
     {
         if (!extension_loaded('gmp')) {
@@ -50,8 +53,9 @@ final class Base58Test extends TestCase
     }
 
     /**
-     * @dataProvider knownVectorProvider
+     * Encode equivalence: BCMath backend produces the canonical base58 from a hex input.
      */
+    #[DataProvider('knownVectorProvider')]
     public function testEncodeWithBcmath(string $hex, string $expectedBase58): void
     {
         if (!extension_loaded('bcmath')) {
@@ -62,8 +66,9 @@ final class Base58Test extends TestCase
     }
 
     /**
-     * @dataProvider knownVectorProvider
+     * Decode equivalence: BCMath backend reproduces the original hex bytes from base58.
      */
+    #[DataProvider('knownVectorProvider')]
     public function testDecodeWithBcmath(string $hex, string $base58): void
     {
         if (!extension_loaded('bcmath')) {

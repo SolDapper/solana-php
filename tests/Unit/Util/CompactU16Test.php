@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SolanaPhpSdk\Tests\Unit\Util;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use SolanaPhpSdk\Exception\InvalidArgumentException;
 use SolanaPhpSdk\Util\ByteBuffer;
@@ -19,17 +20,13 @@ use SolanaPhpSdk\Util\CompactU16;
  */
 final class CompactU16Test extends TestCase
 {
-    /**
-     * @dataProvider boundaryProvider
-     */
+    #[DataProvider('boundaryProvider')]
     public function testEncodeBoundaryValues(int $value, string $expectedHex): void
     {
         $this->assertSame($expectedHex, bin2hex(CompactU16::encode($value)));
     }
 
-    /**
-     * @dataProvider boundaryProvider
-     */
+    #[DataProvider('boundaryProvider')]
     public function testDecodeBoundaryValues(int $expectedValue, string $hex): void
     {
         $buffer = ByteBuffer::fromBytes(hex2bin($hex));

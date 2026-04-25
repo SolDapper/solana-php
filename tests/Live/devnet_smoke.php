@@ -457,6 +457,63 @@ function stepUsdcTransfer(RpcClient $rpc, Keypair $payer, PublicKey $merchant): 
     }
 }
 
+/**
+ * Step 7: exercise the FINALIZED commitment path end-to-end via the
+ * one-call buildSignAndSubmit() API.
+ *
+ * This is the path a high-value ecommerce flow would use: build, sign,
+ * submit, and wait for finalized in a single call. Finalized takes ~13
+ * seconds on mainnet and is mathematically irreversible.
+ *
+ * If this step times out at 120s the chain is genuinely lagging - devnet
+ * occasionally has slow finalization windows but should comfortably hit
+ * finalized in under 30s under normal conditions.
+ */
+function stepFinalizedConfirmation(RpcClient $rpc, Keypair $payer, PublicKey $merchant): bool
+{
+    step("7. Finalized confirmation: buildSignAndSubmit(ConfirmationOptions::finalized())");
+    try {
+        $result = PaymentBuilder::sol($rpc)
+            ->from($payer)
+            ->to($merchant)
+            ->amount(TEST_SOL_LAMPORTS)
+            ->withSimulatedComputeUnitLimit(1.1)
+            ->withFreshBlockhash(Commitment::FINALIZED)
+            ->buildSignAndSubmit(ConfirmationOptions::finalized(120));
+
+        info("Signature: {$result->signature}");
+        info("Explorer: https://explorer.solana.com/tx/{$result->signature}?cluster=devnet");
+
+        if ($result->outcome === ConfirmationResult::OUTCOME_TIMEOUT) {
+            fail("Transaction did not finalize within 120s (chain may be lagging)");
+            return false;
+        }
+        if (!$result->isSuccess()) {
+            fail("Finalized confirmation outcome: {$result->outcome}" .
+                 ($result->error !== null ? ' err=' . json_encode($result->error) : ''));
+            return false;
+        }
+        if ($result->outcome !== ConfirmationResult::OUTCOME_FINALIZED) {
+            // This means we got OUTCOME_CONFIRMED instead. Shouldn't happen
+            // because we asked for finalized commitment - meetsCommitment()
+            // requires the chain to actually report 'finalized' before
+            // returning OUTCOME_FINALIZED.
+            fail("Expected OUTCOME_FINALIZED, got: {$result->outcome}");
+            return false;
+        }
+        pass("Transaction finalized ({$result->confirmationStatus}, " .
+             "{$result->elapsedSeconds}s, {$result->pollCount} polls" .
+             ($result->rebroadcastCount > 0
+                 ? ", {$result->rebroadcastCount} rebroadcasts"
+                 : "") .
+             ")");
+        return true;
+    } catch (\Throwable $e) {
+        fail(get_class($e) . ': ' . $e->getMessage());
+        return false;
+    }
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -500,6 +557,8 @@ function main(): int
 
     $usdcResult = stepUsdcTransfer($rpc, $payer, $merchant);
     $results[] = ['name' => 'USDC transfer', 'ok' => $usdcResult['passed'], 'skip' => $usdcResult['skipped']];
+
+    $results[] = ['name' => 'Finalized confirmation', 'ok' => stepFinalizedConfirmation($rpc, $payer, $merchant), 'skip' => false];
 
     printSummary($results);
     foreach ($results as $r) {
