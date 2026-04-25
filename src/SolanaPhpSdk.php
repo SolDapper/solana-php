@@ -47,7 +47,7 @@ final class SolanaPhpSdk
 
     /**
      * A canonical identifier suitable for a User-Agent header or similar.
-     * Example: "solana-php/solana-sdk 0.1.0".
+     * Example: "solana-php/solana-sdk 0.1.1".
      */
     public static function userAgent(): string
     {

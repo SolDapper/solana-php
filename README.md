@@ -6,7 +6,7 @@
 
 A framework-agnostic PHP library for building Solana transactions, instructions, and integrating Solana payments into PHP applications.
 
-**Status:** All planned features are implemented, every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`), and the full transaction pipeline is end-to-end validated against Solana devnet: transactions built by this library have been signed, submitted, and confirmed on chain, including USDC `transferChecked` with on-the-fly associated-token-account creation, priority-fee estimation against a live validator, and Solana Pay URL generation. 348 unit tests, 1121 assertions.
+**Status:** All planned features are implemented, every wire format is byte-for-byte validated against the canonical JavaScript and Rust reference implementations (`@solana/web3.js`, `@solana/spl-token`, `@solana/pay`, `borsh-rs`), and the full transaction pipeline is end-to-end validated against Solana devnet: transactions built by this library have been signed, submitted, and confirmed on chain at both `confirmed` and `finalized` commitment levels, including USDC `transferChecked` with on-the-fly associated-token-account creation, priority-fee estimation against a live validator, compute-unit simulation, and Solana Pay URL generation. 348 unit tests, 1121 assertions.
 
 **Caveats:**
 - The Solana Pay URLs emitted by this library have not yet been tested against a real mobile wallet app (Phantom, Solflare, Backpack). The URL format conforms byte-for-byte to `@solana/pay`, so wallet compatibility is expected, but not field-proven here.
@@ -57,7 +57,7 @@ Solana PHP uses PSR-4 autoloading but doesn't actually require Composer at runti
 
 ## Versioning
 
-The current version is **0.1.0**. The authoritative version string lives in `SolanaPhpSdk\SolanaPhpSdk::VERSION` and is sent in the `User-Agent` header on every RPC request, so it shows up in your provider's logs as `solana-php/solana-sdk 0.1.0`.
+The current version is **0.1.1**. The authoritative version string lives in `SolanaPhpSdk\SolanaPhpSdk::VERSION` and is sent in the `User-Agent` header on every RPC request, so it shows up in your provider's logs as `solana-php/solana-sdk 0.1.1`.
 
 This library follows semantic versioning with one nuance: while on `0.x`, minor version bumps (0.1 to 0.2) may include breaking changes, and patch bumps (0.1.0 to 0.1.1) are strictly non-breaking fixes. This is the standard `0.x` convention and it gives the library room to refine its API based on feedback from early integrations without forcing a premature `2.0`.
 
@@ -77,7 +77,7 @@ You can check which version is running at any time:
 
 ```php
 echo SolanaPhpSdk\SolanaPhpSdk::VERSION;
-// "0.1.0"
+// "0.1.1"
 ```
 
 ## What's Implemented
@@ -568,7 +568,7 @@ SOLANA_PHP_KEYPAIR_FILE=~/.config/solana/devnet-test.json \
   php tests/Live/devnet_smoke.php
 ```
 
-The script covers: RPC connectivity, SOL transfer with confirmation, priority-fee estimation against the live chain, Solana Pay URL encoding with round-trip parsing, USDC ATA existence check, and USDC `transferChecked` with confirmation. Each step prints PASS/FAIL/SKIP with a clear reason, and the overall script exits non-zero if anything fails.
+The script covers seven steps: RPC connectivity, SOL transfer with `confirmed` commitment, priority-fee estimation against the live chain, Solana Pay URL encoding with round-trip parsing, USDC ATA existence check, USDC `transferChecked` with confirmation, and finalized confirmation via `buildSignAndSubmit(ConfirmationOptions::finalized())`. Each step prints PASS/FAIL/SKIP with a clear reason and timing diagnostics (`commitmentLevel, elapsedSeconds, pollCount`), and the overall script exits non-zero if anything fails.
 
 Environment variables:
 - `SOLANA_PHP_KEYPAIR_FILE` - path to a `solana-keygen` JSON keypair (required)
@@ -586,6 +586,8 @@ Environment variables:
 6. ✅ Program instruction builders (ComputeBudget, System, Token, Associated Token, Memo)
 7. ✅ Solana Pay URL encode/decode + payment verification helpers
 8. ✅ VersionedTransaction (v0) with Address Lookup Tables
+9. ✅ Compute unit estimation via `simulateTransaction`
+10. ✅ Transaction confirmation with rebroadcast and blockhash-expiry detection
 
 ## License
 
